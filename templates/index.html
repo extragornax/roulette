@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Roulette Vélo · extragornax</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Fraunces:wght@400;600&family=Space+Mono:wght@400;700&display=swap">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="layout">
+    <aside class="panel">
+      <header class="brand">
+        <h1>Roulette<br>Vélo</h1>
+        <p class="tagline">Itinéraires surprise sous contraintes.</p>
+      </header>
+
+      <form id="form" class="form">
+        <label class="field">
+          <span class="label">Départ</span>
+          <input id="search" type="text" placeholder="ville, adresse…" autocomplete="off">
+          <small class="hint" id="start-hint">Clique sur la carte ou tape une adresse.</small>
+        </label>
+
+        <label class="field">
+          <span class="label">Distance · <output id="km-out">100</output> km</span>
+          <input id="km" type="range" min="30" max="600" step="10" value="100">
+        </label>
+
+        <label class="field">
+          <span class="label">D+ max · <output id="dplus-out">libre</output></span>
+          <input id="dplus" type="range" min="0" max="8000" step="100" value="0">
+        </label>
+
+        <label class="field">
+          <span class="label">Profil</span>
+          <select id="profile">
+            <option value="trekking" selected>trekking</option>
+            <option value="fastbike">fastbike</option>
+            <option value="safety">safety</option>
+          </select>
+        </label>
+
+        <label class="field row">
+          <input id="loop" type="checkbox" checked>
+          <span>Boucle</span>
+        </label>
+
+        <label class="field">
+          <span class="label">Éviter mes routes (GPX)</span>
+          <input id="avoid-files" type="file" multiple accept=".gpx">
+          <small class="hint" id="avoid-hint"></small>
+        </label>
+
+        <button id="go" class="btn" type="submit">Lancer la roulette</button>
+      </form>
+
+      <section id="result" class="result" hidden>
+        <div class="slot" id="slot">
+          <span class="reel" data-reel="distance">--</span>
+          <span class="reel" data-reel="dplus">--</span>
+          <span class="reel" data-reel="dir">--</span>
+        </div>
+        <dl class="stats" id="stats"></dl>
+        <canvas id="profile-chart" width="320" height="120"></canvas>
+        <ul id="warnings" class="warnings"></ul>
+        <div class="actions">
+          <a id="download" class="btn ghost" download="roulette.gpx">Télécharger GPX</a>
+          <button id="rerun" class="btn ghost" type="button">Relancer</button>
+          <button id="share" class="btn ghost" type="button">Partager</button>
+        </div>
+      </section>
+
+      <section class="history">
+        <h2>Mes derniers parcours</h2>
+        <ul id="history-list"></ul>
+      </section>
+    </aside>
+
+    <div id="map" class="map"></div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  (() => {
+    const map = L.map('map').setView([46.7, 2.5], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 18,
+    }).addTo(map);
+
+    let startMarker = null;
+    let start = null;
+    let routeLayer = null;
+    let forcedMarkers = [];
+    let avoidSession = null;
+    let lastGpx = null;
+    let lastParams = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    map.on('click', (e) => {
+      if (forcedMarkers.length < 3 && start) {
+        const m = L.marker(e.latlng, { opacity: 0.7 }).addTo(map);
+        forcedMarkers.push(m);
+        return;
+      }
+      setStart(e.latlng.lat, e.latlng.lng);
+    });
+
+    function setStart(lat, lon) {
+      start = [lat, lon];
+      if (startMarker) map.removeLayer(startMarker);
+      startMarker = L.marker([lat, lon]).addTo(map);
+      $('start-hint').textContent = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      map.setView([lat, lon], 12);
+    }
+
+    $('km').addEventListener('input', (e) => { $('km-out').textContent = e.target.value; });
+    $('dplus').addEventListener('input', (e) => {
+      const v = parseInt(e.target.value, 10);
+      $('dplus-out').textContent = v === 0 ? 'libre' : `${v} m`;
+    });
+
+    let searchTimer = null;
+    $('search').addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      const q = e.target.value.trim();
+      if (q.length < 3) return;
+      searchTimer = setTimeout(async () => {
+        try {
+          const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+          if (!r.ok) return;
+          const data = await r.json();
+          setStart(data.lat, data.lon);
+        } catch (err) { console.warn(err); }
+      }, 800);
+    });
+
+    $('avoid-files').addEventListener('change', async (e) => {
+      const files = e.target.files;
+      if (!files.length) return;
+      const fd = new FormData();
+      for (const f of files) fd.append('file', f);
+      $('avoid-hint').textContent = 'upload…';
+      try {
+        const r = await fetch('/api/avoid/upload', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        avoidSession = data.session_id;
+        $('avoid-hint').textContent = `${data.points} points enregistrés`;
+      } catch (err) {
+        $('avoid-hint').textContent = `erreur: ${err.message}`;
+      }
+    });
+
+    $('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!start) {
+        $('start-hint').textContent = 'choisis un point de départ d\'abord';
+        return;
+      }
+      const params = {
+        start,
+        distance_km: parseFloat($('km').value),
+        profile: $('profile').value,
+        loop: $('loop').checked,
+        waypoints: forcedMarkers.map((m) => [m.getLatLng().lat, m.getLatLng().lng]),
+      };
+      const dplus = parseInt($('dplus').value, 10);
+      if (dplus > 0) params.dplus_max = dplus;
+      if (avoidSession) params.avoid_session = avoidSession;
+      lastParams = params;
+
+      $('go').disabled = true;
+      $('go').textContent = 'génération…';
+      spin();
+
+      try {
+        const r = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        renderResult(data);
+      } catch (err) {
+        alert(`Erreur: ${err.message}`);
+      } finally {
+        $('go').disabled = false;
+        $('go').textContent = 'Lancer la roulette';
+        stopSpin();
+      }
+    });
+
+    function renderResult(data) {
+      lastGpx = data.gpx;
+      $('result').hidden = false;
+
+      const stats = data.stats;
+      $('slot').querySelector('[data-reel=distance]').textContent = `${stats.distance_km.toFixed(1)} km`;
+      $('slot').querySelector('[data-reel=dplus]').textContent = `${stats.dplus_m.toFixed(0)} m D+`;
+      $('slot').querySelector('[data-reel=dir]').textContent = stats.dominant_direction;
+
+      const dl = $('stats');
+      dl.innerHTML = '';
+      const rows = [
+        ['Distance', `${stats.distance_km.toFixed(1)} km`],
+        ['D+ / D-', `${stats.dplus_m.toFixed(0)} / ${stats.dminus_m.toFixed(0)} m`],
+        ['Durée estimée', `${stats.estimated_duration_h.toFixed(1)} h`],
+        ['Direction', stats.dominant_direction],
+        ['Voies vertes', `${stats.greenway_pct.toFixed(1)} %`],
+      ];
+      for (const [k, v] of rows) {
+        const dt = document.createElement('dt'); dt.textContent = k;
+        const dd = document.createElement('dd'); dd.textContent = v;
+        dl.append(dt, dd);
+      }
+
+      const warn = $('warnings');
+      warn.innerHTML = '';
+      for (const w of (data.warnings || [])) {
+        const li = document.createElement('li');
+        li.textContent = w;
+        warn.appendChild(li);
+      }
+
+      drawGpxOnMap(data.gpx);
+      drawProfile(stats.elevations || []);
+      $('download').href = `data:application/gpx+xml;charset=utf-8,${encodeURIComponent(data.gpx)}`;
+      saveHistory(stats, data.gpx);
+    }
+
+    function drawGpxOnMap(gpxStr) {
+      if (routeLayer) map.removeLayer(routeLayer);
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(gpxStr, 'application/xml');
+      const pts = [...xml.querySelectorAll('trkpt')].map((p) =>
+        [parseFloat(p.getAttribute('lat')), parseFloat(p.getAttribute('lon'))]);
+      if (!pts.length) return;
+      routeLayer = L.polyline(pts, { color: '#E54B2A', weight: 4 }).addTo(map);
+      map.fitBounds(routeLayer.getBounds(), { padding: [40, 40] });
+    }
+
+    function drawProfile(elevs) {
+      const c = $('profile-chart');
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, c.width, c.height);
+      if (!elevs.length) return;
+      const xs = elevs.map((e) => e[0]);
+      const ys = elevs.map((e) => e[1]);
+      const xmin = Math.min(...xs), xmax = Math.max(...xs);
+      const ymin = Math.min(...ys), ymax = Math.max(...ys);
+      const W = c.width, H = c.height, P = 8;
+      const sx = (x) => P + (x - xmin) / Math.max(1e-6, xmax - xmin) * (W - 2 * P);
+      const sy = (y) => H - P - (y - ymin) / Math.max(1e-6, ymax - ymin) * (H - 2 * P);
+      ctx.beginPath();
+      ctx.moveTo(sx(xs[0]), H - P);
+      for (let i = 0; i < xs.length; i++) ctx.lineTo(sx(xs[i]), sy(ys[i]));
+      ctx.lineTo(sx(xs[xs.length - 1]), H - P);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(44, 107, 126, 0.35)';
+      ctx.fill();
+      ctx.strokeStyle = '#0E1424';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    let spinHandle = null;
+    function spin() {
+      const reels = $('slot').querySelectorAll('.reel');
+      spinHandle = setInterval(() => {
+        for (const r of reels) r.textContent = (Math.random() * 999 | 0).toString();
+      }, 80);
+    }
+    function stopSpin() { if (spinHandle) clearInterval(spinHandle); }
+
+    $('rerun').addEventListener('click', () => {
+      if (lastParams) $('form').dispatchEvent(new Event('submit'));
+    });
+
+    $('share').addEventListener('click', () => {
+      if (!lastParams) return;
+      const hash = `#start=${lastParams.start.join(',')}&km=${lastParams.distance_km}&profile=${lastParams.profile}&loop=${lastParams.loop ? 1 : 0}`;
+      const url = location.origin + location.pathname + hash;
+      navigator.clipboard?.writeText(url);
+      alert('Lien copié');
+    });
+
+    function saveHistory(stats, gpx) {
+      const key = 'roulette.history';
+      let items = [];
+      try { items = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_) {}
+      items.unshift({
+        ts: Date.now(),
+        distance_km: stats.distance_km,
+        dplus_m: stats.dplus_m,
+        direction: stats.dominant_direction,
+        gpx,
+      });
+      items = items.slice(0, 20);
+      localStorage.setItem(key, JSON.stringify(items));
+      renderHistory();
+    }
+    function renderHistory() {
+      const key = 'roulette.history';
+      let items = [];
+      try { items = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_) {}
+      const ul = $('history-list');
+      ul.innerHTML = '';
+      for (const it of items) {
+        const li = document.createElement('li');
+        const d = new Date(it.ts).toLocaleDateString('fr-FR');
+        li.textContent = `${d} · ${it.distance_km.toFixed(0)} km · ${it.dplus_m.toFixed(0)} m D+ · ${it.direction}`;
+        li.addEventListener('click', () => drawGpxOnMap(it.gpx));
+        ul.appendChild(li);
+      }
+    }
+    renderHistory();
+
+    if (location.hash) {
+      const params = Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
+      if (params.start) {
+        const [lat, lon] = params.start.split(',').map(Number);
+        setStart(lat, lon);
+      }
+      if (params.km) { $('km').value = params.km; $('km-out').textContent = params.km; }
+      if (params.profile) $('profile').value = params.profile;
+      if (params.loop) $('loop').checked = params.loop === '1';
+    }
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+target/
+.git/
+.gitignore
+data/
+*.db
+*.db-wal
+*.db-shm
+README.md
+.idea/
+.vscode/
