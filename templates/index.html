@@ -25,6 +25,13 @@
           <small class="hint" id="start-hint">Clique sur la carte ou tape une adresse.</small>
         </label>
 
+        <div class="map-tools" role="toolbar">
+          <button type="button" id="mode-start" class="chip">Déplacer départ</button>
+          <button type="button" id="clear-wps" class="chip">Effacer waypoints</button>
+          <button type="button" id="reset-all" class="chip ghost">Reset</button>
+          <small class="hint">Mode actuel: <span id="mode-label">départ</span> · clic-droit sur waypoint pour le retirer.</small>
+        </div>
+
         <label class="field">
           <span class="label">Distance · <output id="km-out">100</output> km</span>
           <input id="km" type="range" min="30" max="600" step="10" value="100">
@@ -99,25 +106,92 @@
     let avoidSession = null;
     let lastGpx = null;
     let lastParams = null;
+    let mode = 'start';
 
     const $ = (id) => document.getElementById(id);
 
+    const startIcon = L.divIcon({
+      className: 'pin pin-start',
+      html: 'S',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+    const wpIcon = (n) => L.divIcon({
+      className: 'pin pin-wp',
+      html: String(n),
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    });
+
+    function setMode(next) {
+      mode = next;
+      $('mode-label').textContent = next === 'start' ? 'départ' : 'waypoint';
+      $('mode-start').classList.toggle('active', next === 'start');
+    }
+
     map.on('click', (e) => {
-      if (forcedMarkers.length < 3 && start) {
-        const m = L.marker(e.latlng, { opacity: 0.7 }).addTo(map);
-        forcedMarkers.push(m);
+      if (mode === 'start' || !start) {
+        setStart(e.latlng.lat, e.latlng.lng);
+        setMode('waypoint');
         return;
       }
-      setStart(e.latlng.lat, e.latlng.lng);
+      addWaypoint(e.latlng.lat, e.latlng.lng);
     });
 
     function setStart(lat, lon) {
       start = [lat, lon];
       if (startMarker) map.removeLayer(startMarker);
-      startMarker = L.marker([lat, lon]).addTo(map);
+      startMarker = L.marker([lat, lon], { icon: startIcon }).addTo(map);
       $('start-hint').textContent = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
       map.setView([lat, lon], 12);
     }
+
+    function addWaypoint(lat, lon) {
+      const idx = forcedMarkers.length + 1;
+      const m = L.marker([lat, lon], { icon: wpIcon(idx) }).addTo(map);
+      m.on('contextmenu', (ev) => {
+        L.DomEvent.preventDefault(ev.originalEvent);
+        removeWaypoint(m);
+      });
+      forcedMarkers.push(m);
+    }
+
+    function removeWaypoint(m) {
+      const i = forcedMarkers.indexOf(m);
+      if (i === -1) return;
+      map.removeLayer(m);
+      forcedMarkers.splice(i, 1);
+      forcedMarkers.forEach((mk, k) => mk.setIcon(wpIcon(k + 1)));
+    }
+
+    function clearWaypoints() {
+      for (const m of forcedMarkers) map.removeLayer(m);
+      forcedMarkers = [];
+    }
+
+    function clearStart() {
+      if (startMarker) map.removeLayer(startMarker);
+      startMarker = null;
+      start = null;
+      $('start-hint').textContent = 'Clique sur la carte ou tape une adresse.';
+    }
+
+    function clearRoute() {
+      if (routeLayer) map.removeLayer(routeLayer);
+      routeLayer = null;
+      $('result').hidden = true;
+      lastGpx = null;
+    }
+
+    $('mode-start').addEventListener('click', () => setMode('start'));
+    $('clear-wps').addEventListener('click', clearWaypoints);
+    $('reset-all').addEventListener('click', () => {
+      clearWaypoints();
+      clearStart();
+      clearRoute();
+      setMode('start');
+    });
+    setMode('start');
 
     $('km').addEventListener('input', (e) => { $('km-out').textContent = e.target.value; });
     $('dplus').addEventListener('input', (e) => {
@@ -136,6 +210,7 @@
           if (!r.ok) return;
           const data = await r.json();
           setStart(data.lat, data.lon);
+          setMode('waypoint');
         } catch (err) { console.warn(err); }
       }, 800);
     });
@@ -327,6 +402,7 @@
       if (params.start) {
         const [lat, lon] = params.start.split(',').map(Number);
         setStart(lat, lon);
+        setMode('waypoint');
       }
       if (params.km) { $('km').value = params.km; $('km-out').textContent = params.km; }
       if (params.profile) $('profile').value = params.profile;
