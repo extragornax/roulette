@@ -72,7 +72,7 @@ Persistent SQLite lives in the `roulette_data` named volume (`/data` inside the 
 |---------------|----------------------------------|-------|
 | `PORT`        | `3000`                           | HTTP port |
 | `DB_PATH`     | `data/roulette.db`               | SQLite path (parent auto-created) |
-| `BROUTER_URL` | `https://brouter.de/brouter`     | Self-host friendly; rate limit auto-detected on `brouter.de` |
+| `BROUTER_URL` | `https://brouter.de`             | Base URL (no `/brouter` suffix). Rate limit auto-detected on `brouter.de`. |
 | `RUST_LOG`    | `info,roulette=info`             | `tracing-subscriber` env filter |
 
 ## API

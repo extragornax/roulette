@@ -34,8 +34,12 @@ async fn main() -> Result<()> {
         .unwrap_or(3000);
     let db_path =
         std::env::var("DB_PATH").unwrap_or_else(|_| "data/roulette.db".into());
-    let brouter_url =
-        std::env::var("BROUTER_URL").unwrap_or_else(|_| "https://brouter.de/brouter".into());
+    let brouter_url = std::env::var("BROUTER_URL")
+        .unwrap_or_else(|_| "https://brouter.de".into())
+        .trim_end_matches('/')
+        .trim_end_matches("/brouter")
+        .trim_end_matches('/')
+        .to_string();
 
     let conn = db::init(&db_path).context("init DB")?;
     db::cleanup_old_sessions(&conn).ok();

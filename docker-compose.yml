@@ -10,7 +10,7 @@ services:
       PORT: 3000
       DB_PATH: /data/roulette.db
       RUST_LOG: ${RUST_LOG:-info,roulette=info}
-      BROUTER_URL: ${BROUTER_URL:-https://brouter.de/brouter}
+      BROUTER_URL: ${BROUTER_URL:-https://brouter.de}
     volumes:
       - roulette_data:/data
 

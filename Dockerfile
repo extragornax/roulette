@@ -28,7 +28,7 @@ WORKDIR /home/app
 ENV PORT=3000 \
     DB_PATH=/data/roulette.db \
     RUST_LOG=info,roulette=info \
-    BROUTER_URL=https://brouter.de/brouter
+    BROUTER_URL=https://brouter.de
 
 EXPOSE 3000
 VOLUME ["/data"]
